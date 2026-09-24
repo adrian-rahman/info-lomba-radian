@@ -1,4 +1,4 @@
-# Info Lomba
+# Matek Ambis
 
 Website katalog dan arsip kompetisi mahasiswa, dengan desain terinspirasi portofolio Radian: warna gelap, aksen merah dan emas, Plus Jakarta Sans, serta Playfair Display. Tersedia mode terang dan gelap, responsif di HP.
 
