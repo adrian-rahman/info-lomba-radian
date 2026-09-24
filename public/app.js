@@ -22,7 +22,10 @@ const paths = {
   trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
   upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/>',
   link:'<path d="m10 14 4-4m-6 6-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m2 2 2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0" transform="translate(1 -1)"/>',
-  logout:'<path d="M9 4H4v16h5m5-12 4 4-4 4M8 12h13"/>', check:'<path d="m5 12 4 4L19 6"/>'
+  logout:'<path d="M9 4H4v16h5m5-12 4 4-4 4M8 12h13"/>', check:'<path d="m5 12 4 4L19 6"/>',
+  bell:'<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9m7 13a3 3 0 0 1-6 0"/>',
+  bellOff:'<path d="M8.7 3A6 6 0 0 1 18 8a21.3 21.3 0 0 0 .6 5M17 17H3s3-2 3-9a6 6 0 0 1 .4-2m4.6 15a3 3 0 0 1-5.7-1.3M1 1l22 22"/>',
+  send:'<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>'
 };
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.info}</svg>`;
 const fmtDate = value => new Intl.DateTimeFormat('id-ID', { day:'numeric', month:'short', year:'numeric' }).format(new Date(`${value}T12:00:00`));
@@ -61,6 +64,94 @@ $('#admin-icon').innerHTML = icon('lock');
 $('.skip-link').addEventListener('click', e => { e.preventDefault(); $('#main').focus(); $('#main').scrollIntoView(); });
 function closeButton(id) { return `<button type="button" class="icon-button" data-action="close" data-dialog="${id}" aria-label="Tutup">${icon('close')}</button>`; }
 function openDialog(id) { const dialog = $(`#${id}`); if (!dialog.open) dialog.showModal(); return dialog; }
+function urlB64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+async function updateNotifButton() {
+  const btn = $('#notif-toggle');
+  if (!btn) return;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.innerHTML = icon('bell');
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager?.getSubscription();
+    if (sub) {
+      btn.innerHTML = icon('bell');
+      btn.classList.add('notif-active');
+      btn.setAttribute('aria-label', 'Notifikasi lomba aktif');
+      btn.title = 'Notifikasi lomba aktif. Klik untuk berhenti berlangganan.';
+    } else {
+      btn.innerHTML = icon('bellOff');
+      btn.classList.remove('notif-active');
+      btn.setAttribute('aria-label', 'Aktifkan notifikasi lomba');
+      btn.title = 'Aktifkan notifikasi lomba baru & deadline';
+    }
+  } catch {}
+}
+async function toggleNotification() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    toast('Browser ini tidak mendukung Web Push Notification.');
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    toast('Izin notifikasi diblokir di browser. Buka setelan browser untuk mengizinkannya.');
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      await existing.unsubscribe();
+      await api('/notifications/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: existing.endpoint }) });
+      await updateNotifButton();
+      toast('Notifikasi lomba dinonaktifkan.');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      toast('Izin notifikasi tidak diberikan.');
+      return;
+    }
+    const { publicKey } = await api('/notifications/vapid-key');
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlB64ToUint8Array(publicKey)
+    });
+    await api('/notifications/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub }) });
+    await updateNotifButton();
+    toast('🔔 Notifikasi Matek Ambis aktif!');
+  } catch (err) {
+    toast(err.message || 'Gagal mengatur notifikasi.');
+  }
+}
+function showBroadcastDialog() {
+  $('#broadcast-dialog').innerHTML = `<div class="dialog-header"><div><h2>Kirim Notifikasi Siaran</h2><p>Kirim pesan ke seluruh pengunjung yang mengaktifkan notifikasi.</p></div>${closeButton('broadcast-dialog')}</div><div class="dialog-content"><form id="broadcast-form"><div class="form-field"><label for="bc-title">Judul Notifikasi</label><input id="bc-title" name="title" placeholder="Contoh: Lomba Baru Telah Dibuka!" required maxlength="120" value="Matek Ambis — Info Lomba Terbaru 🏆"></div><div class="form-field"><label for="bc-body">Isi Pesan</label><textarea id="bc-body" name="body" placeholder="Tulis pesan singkat untuk peserta lomba…" required maxlength="300"></textarea></div><div class="form-field"><label for="bc-url">Tautan Tujuan (URL)</label><input id="bc-url" name="url" placeholder="Contoh: / atau /#lomba/demo-data" value="/"></div><p id="bc-error" class="form-error" role="alert"></p><button type="submit" class="btn btn-primary full-width">${icon('send')}Kirim Sekarang</button></form></div>`;
+  $('#broadcast-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('button[type=submit]', e.target);
+    btn.disabled = true;
+    $('#bc-error').textContent = '';
+    try {
+      const data = Object.fromEntries(new FormData(e.target));
+      const res = await api('/notifications/broadcast', { method: 'POST', body: JSON.stringify(data) });
+      $('#broadcast-dialog').close();
+      toast(`✅ Notifikasi terkirim ke ${res.sent} dari ${res.total} subscriber.`);
+    } catch (err) {
+      $('#bc-error').textContent = err.message || 'Gagal mengirim notifikasi.';
+      btn.disabled = false;
+    }
+  });
+  openDialog('broadcast-dialog');
+}
 async function loadData() {
   const [cats, data] = await Promise.all([api('/categories'), api('/competitions')]);
   state.categories = cats; state.items = data.competitions; state.today = data.today;
@@ -121,7 +212,7 @@ function renderAdmin() {
   if (!state.username) return renderLogin();
   navActive('admin'); document.title = 'Dashboard Admin — Matek Ambis (by Radian)';
   const published = state.adminItems.filter(c => c.publication === 'published');
-  $('#main').innerHTML = `<section class="container admin-page"><div class="page-heading"><div><div class="eyebrow">Ruang pengelolaan · ${escape(state.username)}</div><h1>Kelola kesempatan<span class="brand-dot">.</span></h1><p>Informasi yang rapi, peluang yang lebih mudah ditemukan.</p></div><div class="page-actions"><button class="btn btn-small" data-action="logout">${icon('logout')}Keluar</button><button class="btn btn-primary" data-action="add">${icon('plus')}Tambah Lomba</button></div></div><div class="stats">${[['grid','Total lomba',state.adminItems.length],['trophy','Pendaftaran dibuka',published.filter(c => status(c) === 'open').length],['edit','Draft',state.adminItems.filter(c => c.publication === 'draft').length],['archive','Diarsipkan',published.filter(c => status(c) === 'closed').length]].map(([symbol,label,n]) => `<div class="stat-box">${icon(symbol)}<span>${label}</span><strong>${n}</strong></div>`).join('')}</div><div class="admin-tools"><div class="search-box">${icon('search')}<input id="admin-search" type="search" placeholder="Cari lomba di dashboard…" aria-label="Cari lomba di dashboard" value="${escape(state.adminSearch)}"></div><select id="admin-publication" aria-label="Filter publikasi"><option value="all">Semua publikasi</option><option value="published">Dipublikasikan</option><option value="draft">Draft</option></select><button class="btn" data-action="categories">${icon('grid')}Kelola Kategori</button></div><div class="table-wrap"><table><thead><tr><th>Lomba</th><th>Kategori</th><th>Deadline</th><th>Status</th><th>Aksi</th></tr></thead><tbody id="admin-rows"></tbody></table></div><p class="hint spaced">Lomba yang melewati tanggal akhir otomatis masuk arsip. Data berlabel “Contoh” dapat dihapus setelah selesai mencoba.</p></section>`;
+  $('#main').innerHTML = `<section class="container admin-page"><div class="page-heading"><div><div class="eyebrow">Ruang pengelolaan · ${escape(state.username)}</div><h1>Kelola kesempatan<span class="brand-dot">.</span></h1><p>Informasi yang rapi, peluang yang lebih mudah ditemukan.</p></div><div class="page-actions"><button class="btn btn-small" data-action="logout">${icon('logout')}Keluar</button><button class="btn btn-primary" data-action="add">${icon('plus')}Tambah Lomba</button></div></div><div class="stats">${[['grid','Total lomba',state.adminItems.length],['trophy','Pendaftaran dibuka',published.filter(c => status(c) === 'open').length],['edit','Draft',state.adminItems.filter(c => c.publication === 'draft').length],['archive','Diarsipkan',published.filter(c => status(c) === 'closed').length]].map(([symbol,label,n]) => `<div class="stat-box">${icon(symbol)}<span>${label}</span><strong>${n}</strong></div>`).join('')}</div><div class="admin-tools"><div class="search-box">${icon('search')}<input id="admin-search" type="search" placeholder="Cari lomba di dashboard…" aria-label="Cari lomba di dashboard" value="${escape(state.adminSearch)}"></div><select id="admin-publication" aria-label="Filter publikasi"><option value="all">Semua publikasi</option><option value="published">Dipublikasikan</option><option value="draft">Draft</option></select><button class="btn" data-action="categories">${icon('grid')}Kelola Kategori</button><button class="btn" data-action="broadcast">${icon('send')}Kirim Notifikasi</button></div><div class="table-wrap"><table><thead><tr><th>Lomba</th><th>Kategori</th><th>Deadline</th><th>Status</th><th>Aksi</th></tr></thead><tbody id="admin-rows"></tbody></table></div><p class="hint spaced">Lomba yang melewati tanggal akhir otomatis masuk arsip. Data berlabel “Contoh” dapat dihapus setelah selesai mencoba.</p></section>`;
   $('#admin-publication').value = state.adminPublication;
   $('#admin-search').addEventListener('input',e => { state.adminSearch=e.target.value; renderAdminRows(); });
   $('#admin-publication').addEventListener('change',e => { state.adminPublication=e.target.value; renderAdminRows(); });
@@ -198,12 +289,14 @@ document.addEventListener('click', async e => {
   if (action==='add') showEditor();
   if (action==='edit') showEditor(button.dataset.id);
   if (action==='categories') showCategories();
+  if (action==='broadcast') showBroadcastDialog();
   if (action==='delete') confirmDelete(button.dataset.id);
   if (action==='delete-category') confirmDelete(button.dataset.id,true);
   if (action==='poster') { const item=state.items.find(c => c.id===button.dataset.id); $('#poster-dialog').innerHTML=`<div class="dialog-header">Poster lomba ${closeButton('poster-dialog')}</div><img src="${escape(item.poster)}" alt="Poster ${escape(item.title)}">`; openDialog('poster-dialog'); }
   if (action==='share') { try { await navigator.clipboard.writeText(`${location.origin}/#lomba/${button.dataset.id}`); toast('Link lomba berhasil disalin.'); } catch { toast('Salin link dari bilah alamat browser.'); } }
   if (action==='logout') { try { await api('/logout',{method:'POST'}); state.username=null; state.adminItems=[]; renderLogin(); toast('Kamu telah keluar.'); } catch(error) { toast(error.message); } }
 });
+$('#notif-toggle')?.addEventListener('click', toggleNotification);
 $$('dialog').forEach(dialog => { dialog.addEventListener('click',e => { if (e.target === dialog) { const r=dialog.getBoundingClientRect(); if (e.clientX<r.left || e.clientX>r.right || e.clientY<r.top || e.clientY>r.bottom) dialog.close(); } }); });
 $('#detail-dialog').addEventListener('close',() => { if (location.hash.startsWith('#lomba/')) { history.replaceState(null,'',`#${state.returnPage}`); document.title=state.returnPage === 'arsip' ? 'Arsip Lomba — Matek Ambis (by Radian)' : 'Matek Ambis (by Radian) — Ruang untuk berprestasi'; } });
 let routing=0;
@@ -220,7 +313,7 @@ async function route() {
 }
 window.addEventListener('hashchange',() => route().catch(error => toast(error.message)));
 async function init() {
-  try { const session=await api('/session'); state.username=session.username; state.needsSetup=session.needsSetup; await loadData(); await route(); }
+  try { const session=await api('/session'); state.username=session.username; state.needsSetup=session.needsSetup; await loadData(); await updateNotifButton(); await route(); }
   catch(error) { $('#main').innerHTML=`<div class="container loading-state"><h2>Website belum bisa dimuat</h2><p>${escape(error.message)}</p><p>Pastikan server berjalan, lalu muat ulang halaman.</p><button class="btn spaced" id="retry">Coba lagi</button></div>`; $('#retry').addEventListener('click',init); }
 }
 setInterval(() => { const today=getToday(); if (today !== state.today) { state.today=today; if ($('#cards')) renderCards(); if ($('#admin-rows')) renderAdminRows(); } },60000);
